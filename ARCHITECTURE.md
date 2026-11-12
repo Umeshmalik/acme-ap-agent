@@ -24,12 +24,12 @@ flowchart TD
         lock[lock.py<br/>one terminal per conversation]
     end
     agentpy[agent.py<br/>wires it together]
-    core[core.py : Agent<br/>loop, approvals, stop, recovery]
+    core[app/core.py : Agent<br/>loop, approvals, stop, recovery]
     providers[providers/<br/>gemini, groq, ollama]
-    tools[tools.py<br/>tool registry]
-    rules[posting_rules.py<br/>check, post, recover]
-    data[data.py<br/>invoices + vendors.json]
-    store[(store.py<br/>conversations.db)]
+    tools[app/tools.py<br/>tool registry]
+    rules[app/posting_rules.py<br/>check, post, recover]
+    data[app/data.py<br/>invoices + vendors.json]
+    store[(app/store.py<br/>conversations.db)]
     ledger[(ledger.py<br/>ledger.db, given, unchanged)]
     llm{{LLM APIs}}
 
@@ -44,7 +44,7 @@ flowchart TD
     core --> store
 ```
 
-**Dependency rule:** arrows only point downwards. `core.py` never prints and never names a
+**Dependency rule:** arrows only point downwards. `app/core.py` never prints and never names a
 provider. Tools never know about the agent. Providers never know about tools beyond a
 name, a description and a JSON schema. So each layer can be read, tested and replaced on
 its own.
@@ -52,6 +52,17 @@ its own.
 ---
 
 ## 2. Module map
+
+```text
+agent.py        entry point: python agent.py --conversation demo
+ledger.py       the given ledger; must sit at the root, unchanged
+app/            the agent itself, with no terminal code
+cli/            the terminal front end
+providers/      one connector per LLM API
+tests/          offline tests with a fake provider
+invoices/  vendors.json            business data (read-only)
+conversations.db  ledger.db        created at run time, git-ignored
+```
 
 | File | Lines | Job | Talks to |
 |---|---|---|---|
@@ -61,11 +72,11 @@ its own.
 | `cli/turn.py` | ~85 | `run_turn`: runs one turn on a worker thread, handles Ctrl-C, reports failures, tidies the history. | `Agent` |
 | `cli/display.py` | ~60 | `show_event` (the Agent's `on_event` callback), the approval box, `/history`, the status bar. | nothing (pure output) |
 | `cli/lock.py` | ~30 | `flock` / `msvcrt.locking` on `.locks/<conversation>.lock`. | OS |
-| `core.py` | ~340 | `Agent`: the model ↔ tool loop, approvals, cancel checks, crash and stop repair, history trimming. No I/O. | `providers`, `tools`, `store` |
-| `tools.py` | ~150 | `Tool` dataclass, the four read tools, the `TOOLS` registry, `run_tool`. | `data`, `posting_rules`, `ledger` |
-| `posting_rules.py` | ~95 | `check_postable` (all posting checks), `post_to_ledger`, `find_interrupted_post`. | `data`, `ledger` |
-| `data.py` | ~45 | Reads invoice files (with id validation) and `vendors.json`. | files |
-| `store.py` | ~190 | SQLite: conversations, messages, posts. | `conversations.db` |
+| `app/core.py` | ~340 | `Agent`: the model ↔ tool loop, approvals, cancel checks, crash and stop repair, history trimming. No I/O. | `providers`, `tools`, `store` |
+| `app/tools.py` | ~150 | `Tool` dataclass, the four read tools, the `TOOLS` registry, `run_tool`. | `data`, `posting_rules`, `ledger` |
+| `app/posting_rules.py` | ~95 | `check_postable` (all posting checks), `post_to_ledger`, `find_interrupted_post`. | `data`, `ledger` |
+| `app/data.py` | ~45 | Reads invoice files (with id validation) and `vendors.json`. | files |
+| `app/store.py` | ~190 | SQLite: conversations, messages, posts. | `conversations.db` |
 | `providers/base.py` | ~120 | `Provider` protocol, `with_retries`, error types, call ids. | – |
 | `providers/{gemini,groq,ollama}.py` | ~100–155 each | One connector per SDK: neutral history → SDK request → neutral reply. | the SDK |
 | `providers/__init__.py` | ~30 | `PROVIDERS` registry and `create(name)` (reads key and model from the environment). | connectors |
@@ -110,7 +121,7 @@ sequenceDiagram
     participant C as Clerk
     participant CLI as cli/ (main thread)
     participant W as worker thread
-    participant A as Agent (core.py)
+    participant A as Agent (app/core.py)
     participant P as Provider
     participant T as Tools
     participant S as Store (SQLite)
@@ -152,7 +163,7 @@ The model can only call `post_invoice(invoice_id)`. What gets posted is built in
 
 ```mermaid
 flowchart TD
-    call["model calls post_invoice(invoice_id)"] --> check{"check_postable<br/>(posting_rules.py)"}
+    call["model calls post_invoice(invoice_id)"] --> check{"check_postable<br/>(app/posting_rules.py)"}
     check -- "bad id / missing file" --> refuse
     check -- "vendor unknown or blocked" --> refuse
     check -- "total not positive, or lines + taxes != total" --> refuse
@@ -337,11 +348,11 @@ notify) -> assistant message`. Convert the neutral history in and the reply out,
 the SDK call in `with_retries`. Then add one line to `PROVIDERS`. Nothing else names a
 provider.
 
-**Add a tool.** Add a function and a `Tool(...)` entry to `TOOLS` in `tools.py`. If it
+**Add a tool.** Add a function and a `Tool(...)` entry to `TOOLS` in `app/tools.py`. If it
 changes something in the outside world, give it `needs_approval=True` and a `prepare`
 (checks → details), a `run(details, reference)` and a `recover(details, reference)`. It
 then goes through the same approval, stop and crash path as posting, with no change to
-`core.py`.
+`app/core.py`.
 
 ---
 

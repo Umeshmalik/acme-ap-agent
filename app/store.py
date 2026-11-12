@@ -13,7 +13,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).with_name("conversations.db")
+DB_PATH = Path(__file__).resolve().parent.parent / "conversations.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (

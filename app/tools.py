@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 import ledger
-from data import ToolError, find_vendor, invoice_ids, load_invoice
-from posting_rules import check_postable, find_interrupted_post, post_to_ledger
+from app.data import ToolError, find_vendor, invoice_ids, load_invoice
+from app.posting_rules import check_postable, find_interrupted_post, post_to_ledger
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,13 @@ from typing import Callable, Sequence
 from google import genai
 from google.genai import errors, types
 
-from providers.base import REQUEST_TIMEOUT_S, ProviderError, ToolSpec, new_call_id, with_retries
+from providers.base import (
+    REQUEST_TIMEOUT_S,
+    ProviderError,
+    ToolSpec,
+    new_call_id,
+    with_retries,
+)
 
 # Gemini 3 rejects replayed function calls that lack a thought signature. Calls made by
 # another provider never had one, and Google documents this value for that case.

@@ -15,9 +15,9 @@ import threading
 from typing import Callable
 
 import providers
+from app.store import Store
+from app.tools import TOOLS, Tool, run_tool
 from providers import Cancelled, Provider
-from store import Store
-from tools import TOOLS, Tool, run_tool
 
 MAX_STEPS = 15
 # ponytail: older turns are simply not sent once a conversation is this long; summarise

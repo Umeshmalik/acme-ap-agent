@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent.parent  # the project folder
 INVOICE_DIR = HERE / "invoices"
 VENDORS_PATH = HERE / "vendors.json"
 _INVOICE_ID = re.compile(r"invoice-\d{2}")

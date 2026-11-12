@@ -39,7 +39,7 @@ calls get Google's documented placeholder). Switching only changes which connect
 
 ## Approval and the posting checks
 
-The model passes only an `invoice_id`. `check_postable` (`posting_rules.py`) runs in code before any approval:
+The model passes only an `invoice_id`. `check_postable` (`app/posting_rules.py`) runs in code before any approval:
 file exists, vendor is in `vendors.json` and `active`, total is a positive decimal that equals lines +
 taxes, no ledger entry with the same vendor + invoice number, not already open in any conversation
 (a partial unique index in SQLite enforces this, so two conversations racing can't both get an approval). Blocked vendors and

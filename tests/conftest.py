@@ -9,9 +9,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import ledger  # noqa: E402
-from core import Agent  # noqa: E402
+from app.core import Agent  # noqa: E402
+from app.store import Store  # noqa: E402
 from providers import ProviderError  # noqa: E402
-from store import Store  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

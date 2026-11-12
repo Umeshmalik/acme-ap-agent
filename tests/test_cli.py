@@ -4,11 +4,12 @@ import os
 import signal
 import threading
 
+from conftest import call, say
+
 import ledger
 from cli.commands import COMMANDS, handle
-from cli.turn import run_turn
 from cli.prompt import suggestions
-from conftest import call, say
+from cli.turn import run_turn
 
 CMDS = {c: text for c, (_, text) in COMMANDS.items()}
 PROVIDERS = ["gemini", "groq", "ollama"]

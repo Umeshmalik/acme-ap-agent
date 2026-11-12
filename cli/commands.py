@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import difflib
 
+from app.core import Agent
 from cli.display import show_approval, show_history
 from cli.turn import run_turn
-from core import Agent
 from providers import PROVIDERS, ProviderError
 
 # command -> (argument hint, help text)

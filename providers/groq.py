@@ -8,7 +8,13 @@ from typing import Callable, Sequence
 
 import groq
 
-from providers.base import REQUEST_TIMEOUT_S, ProviderError, ToolSpec, new_call_id, with_retries
+from providers.base import (
+    REQUEST_TIMEOUT_S,
+    ProviderError,
+    ToolSpec,
+    new_call_id,
+    with_retries,
+)
 
 
 class GroqProvider:

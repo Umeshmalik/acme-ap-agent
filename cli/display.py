@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from core import Agent
+from app.core import Agent
 
 
 def show_event(kind: str, payload: object) -> None:

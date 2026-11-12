@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import threading
 
-import ledger
-import posting_rules
 from conftest import call, say
-from core import Agent
+
+import ledger
+from app import posting_rules
+from app.core import Agent
 from providers import Cancelled
 
 

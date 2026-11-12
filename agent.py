@@ -3,8 +3,8 @@
     uv run agent.py --conversation demo [--model gemini|groq|ollama]
 
 This file only wires things together: open the conversation, settle anything a crash left
-behind, then read lines until /quit. The pieces live in cli/ (terminal), core.py (the
-agent), tools.py and posting_rules.py (what it can do), store.py (saving), providers/.
+behind, then read lines until /quit. The pieces live in cli/ (terminal), app/ (the agent,
+its tools and posting rules, saving) and providers/ (the LLM connectors).
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from app.core import Agent
+from app.store import Store
 from cli.commands import COMMANDS, handle
 from cli.display import show_approval, show_event, status_line
 from cli.lock import lock_conversation
 from cli.prompt import make_reader
-from core import Agent
 from providers import PROVIDERS, ProviderError
-from store import Store
 
 HISTORY_FILE = Path(__file__).parent / ".agent_history"
 DEFAULT_PROVIDER = next(iter(PROVIDERS))

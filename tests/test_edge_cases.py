@@ -4,11 +4,11 @@ import dataclasses
 import json
 import threading
 
-import data
-import ledger
-import posting_rules
 from conftest import call, say
-from core import MAX_HISTORY, _recent
+
+import ledger
+from app import data, posting_rules
+from app.core import MAX_HISTORY, _recent
 from providers.base import with_retries
 
 

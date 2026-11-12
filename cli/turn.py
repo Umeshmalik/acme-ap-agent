@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Callable
 
-from core import Agent
+from app.core import Agent
 from providers import Cancelled, ProviderError
 
 STILL_WORKING_EVERY_S = 15

@@ -13,7 +13,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 import ledger
-from data import ToolError, find_vendor, load_invoice
+from app.data import ToolError, find_vendor, load_invoice
 
 
 def check_postable(invoice_id: str) -> dict:

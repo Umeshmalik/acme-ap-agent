@@ -17,7 +17,7 @@ from prompt_toolkit.auto_suggest import AutoSuggest, AutoSuggestFromHistory, Sug
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
 
-from tools import list_invoices
+from app.tools import list_invoices
 
 Option = tuple[str, str]  # (text to insert, short description)
 
