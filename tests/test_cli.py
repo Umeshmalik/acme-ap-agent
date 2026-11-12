@@ -5,8 +5,9 @@ import signal
 import threading
 
 import ledger
-from agent import COMMANDS, handle, run_turn
-from cli_input import suggestions
+from cli.commands import COMMANDS, handle
+from cli.turn import run_turn
+from cli.prompt import suggestions
 from conftest import call, say
 
 CMDS = {c: text for c, (_, text) in COMMANDS.items()}

@@ -1,7 +1,7 @@
 # Acme Foods AP agent: a small agent harness
 
 A command-line agent for an accounts payable clerk. It reads invoices, checks vendors and the
-ledger, and posts to `ledger.py` only after the clerk approves. Brief: [ASSIGNMENT.md](ASSIGNMENT.md).
+ledger, and posts to `ledger.py` only after the clerk approves. Brief: [ASSIGNMENT.md](ASSIGNMENT.md). How it works inside: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Run it
 
@@ -39,7 +39,7 @@ calls get Google's documented placeholder). Switching only changes which connect
 
 ## Approval and the posting checks
 
-The model passes only an `invoice_id`. `check_postable` (`tools.py`) runs in code before any approval:
+The model passes only an `invoice_id`. `check_postable` (`posting_rules.py`) runs in code before any approval:
 file exists, vendor is in `vendors.json` and `active`, total is a positive decimal that equals lines +
 taxes, no ledger entry with the same vendor + invoice number, not already open in any conversation
 (a partial unique index in SQLite enforces this, so two conversations racing can't both get an approval). Blocked vendors and

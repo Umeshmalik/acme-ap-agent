@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 
 import ledger
-import tools
+import posting_rules
 from conftest import call, say
 from core import Agent
 from providers import Cancelled
@@ -15,10 +15,10 @@ def unanswered(history: list[dict]) -> set[str]:
 
 
 def test_guards():
-    assert tools.check_postable("invoice-01")["ok"]
-    assert "blocked" in tools.check_postable("invoice-04")["reason"]
-    assert "JE-000001" in tools.check_postable("invoice-05")["reason"]
-    assert not tools.check_postable("../vendors")["ok"]
+    assert posting_rules.check_postable("invoice-01")["ok"]
+    assert "blocked" in posting_rules.check_postable("invoice-04")["reason"]
+    assert "JE-000001" in posting_rules.check_postable("invoice-05")["reason"]
+    assert not posting_rules.check_postable("../vendors")["ok"]
 
 
 def test_blocked_and_duplicate_are_refused_without_approval(make_agent, go):
@@ -52,7 +52,7 @@ def test_approve_posts_once_and_resumes_after_restart(make_agent, store, go):
     assert len(posted) == 1
     assert fresh.history[-1]["text"] == "Posted."
     assert fresh.history[-2]["result"]["entry_id"] == posted[0]["entry_id"]
-    assert tools.check_postable("invoice-02")["ok"] is False
+    assert posting_rules.check_postable("invoice-02")["ok"] is False
 
 
 def test_decline_posts_nothing_and_tells_the_model(make_agent, go):

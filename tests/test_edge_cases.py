@@ -4,8 +4,9 @@ import dataclasses
 import json
 import threading
 
+import data
 import ledger
-import tools
+import posting_rules
 from conftest import call, say
 from core import MAX_HISTORY, _recent
 from providers.base import with_retries
@@ -97,8 +98,8 @@ def test_long_history_is_cut_at_a_turn_boundary():
 
 
 def test_invoice_that_does_not_add_up_is_refused(tmp_path, monkeypatch):
-    invoice = json.loads((tools.INVOICE_DIR / "invoice-01.json").read_text())
+    invoice = json.loads((data.INVOICE_DIR / "invoice-01.json").read_text())
     invoice["total"] = str(float(invoice["total"]) + 100)
     (tmp_path / "invoice-01.json").write_text(json.dumps(invoice))
-    monkeypatch.setattr(tools, "INVOICE_DIR", tmp_path)
-    assert "doesn't add up" in tools.check_postable("invoice-01")["reason"]
+    monkeypatch.setattr(data, "INVOICE_DIR", tmp_path)
+    assert "doesn't add up" in posting_rules.check_postable("invoice-01")["reason"]
