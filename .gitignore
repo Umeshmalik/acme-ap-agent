@@ -1,4 +1,6 @@
 ledger.db
+conversations.db
 __pycache__/
 .venv/
 .env
+.pytest_cache/
