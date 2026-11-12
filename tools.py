@@ -244,3 +244,5 @@ def run_tool(name: str, args: dict) -> dict:
         return {"error": str(exc)}
     except TypeError as exc:
         return {"error": f"bad arguments for {name}: {exc}"}
+    except Exception as exc:  # e.g. a corrupt invoice file: report it, don't end the turn
+        return {"error": f"{name} failed: {type(exc).__name__}: {exc}"}

@@ -176,7 +176,8 @@ class Agent:
         with self._lock:
             if cancel.is_set():
                 raise Cancelled()
-            self.store.set_post_status(post["call_id"], "posting")
+            if not self.store.claim_post(post["call_id"]):
+                raise LookupError("that approval was already settled elsewhere")
             self.posting.set()
         try:
             # Once started, the action is never abandoned: its outcome is always recorded.
@@ -275,6 +276,8 @@ def _prepare(tool: Tool, args: dict) -> dict:
         return tool.prepare(**args)
     except TypeError as exc:
         return {"ok": False, "reason": f"bad arguments for {tool.name}: {exc}"}
+    except Exception as exc:  # a check that can't run must refuse, never allow
+        return {"ok": False, "reason": f"checks failed to run: {type(exc).__name__}: {exc}"}
 
 
 def _tool_message(call: dict, result: dict) -> dict:

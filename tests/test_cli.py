@@ -1,0 +1,37 @@
+from __future__ import annotations
+
+from agent import COMMANDS, handle
+from cli_input import suggestions
+from conftest import call, say
+
+CMDS = {c: text for c, (_, text) in COMMANDS.items()}
+PROVIDERS = ["gemini", "groq", "ollama"]
+
+
+def texts(line: str) -> list[str]:
+    return [text for text, _ in suggestions(line, CMDS, PROVIDERS)]
+
+
+def test_suggestions():
+    assert texts("/") == list(CMDS)
+    assert texts("/ap") == ["/approve"]
+    assert texts("/model ") == PROVIDERS
+    assert texts("/model g") == ["gemini", "groq"]
+    assert texts("/model groq extra") == []
+    assert texts("post in")[:2] == ["invoice-01", "invoice-02"]
+    assert texts("post invoice-04") == []          # already complete
+    assert texts("hello") == []                    # plain chat: no noise
+    assert texts("") == []
+    meta = dict(suggestions("post invoice-0", CMDS, PROVIDERS))
+    assert "Orbit Facility Services" in meta["invoice-04"]
+
+
+def test_absurd_lines_never_crash(make_agent, capsys):
+    agent, _ = make_agent([call("post_invoice", invoice_id="invoice-03"), say("waiting")])
+    for line in ["/", "//", "/APPROVE", "/aprove", "/model", "/model banana", "/model  ", "/decline",
+                 "/approve now please", "/pending", "/history", "/help"]:
+        assert handle(agent, line) is True
+    out = capsys.readouterr().out
+    assert "Did you mean /approve?" in out
+    assert "Can't switch" in out
+    assert handle(agent, "/quit") is False

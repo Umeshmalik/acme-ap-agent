@@ -1,26 +1,54 @@
 """Command-line front end for the accounts payable agent.
 
-    python agent.py --conversation demo [--model gemini|groq]
+    uv run agent.py --conversation demo [--model gemini|groq|ollama]
 
 Each turn runs on a worker thread so Ctrl-C can stop it: the main thread marks the turn
 cancelled, waits briefly (or until an approved post finishes), and tidies the history.
+Input suggestions and history live in cli_input.py.
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
+import re
 import sys
 import threading
-from typing import Callable
+from pathlib import Path
+from typing import Callable, TextIO
 
 from dotenv import load_dotenv
 
+from cli_input import make_reader
 from core import Agent
 from providers import PROVIDERS, Cancelled, ProviderError
 from store import Store
 
+try:
+    import fcntl
+except ImportError:  # Windows: no conversation lock
+    fcntl = None
+
+HERE = Path(__file__).parent
+HISTORY_FILE = HERE / ".agent_history"
+LOCK_DIR = HERE / ".locks"
 DEFAULT_PROVIDER = next(iter(PROVIDERS))
+_CONVERSATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+# command -> (argument hint, help text)
+COMMANDS = {
+    "/approve": ("", "post the invoice that is waiting for approval"),
+    "/decline": ("<reason>", "don't post it; the reason is passed to the agent"),
+    "/pending": ("", "show the approval that is waiting, if any"),
+    "/model": ("<name>", f"switch provider ({', '.join(PROVIDERS)}); history carries over"),
+    "/history": ("", "show this conversation so far"),
+    "/help": ("", "show these commands"),
+    "/quit": ("", "leave (everything is already saved)"),
+}
+
+
+# output
 
 
 def show_event(kind: str, payload: object) -> None:
@@ -46,6 +74,34 @@ def show_approval(details: dict) -> None:
         f"    amount    {details['currency']} {details['amount']}\n"
         "  Type /approve or /decline <reason>\n"
     )
+
+
+def show_help() -> None:
+    for command, (hint, text) in COMMANDS.items():
+        print(f"  {(command + ' ' + hint).strip():<20} {text}")
+    print("  Anything else is sent to the agent. Ctrl-C stops it while it's working.")
+
+
+def show_history(agent: Agent) -> None:
+    for message in agent.history:
+        if message["role"] == "user":
+            print(f"  you: {message['text']}")
+        elif message["role"] == "assistant":
+            if message.get("text"):
+                print(f"  agent: {message['text']}")
+            for call in message.get("tool_calls") or []:
+                print(f"  agent calls {call['name']}({json.dumps(call['args'])})")
+        else:
+            print(f"  result of {message['name']}: {json.dumps(message['result'])[:120]}")
+
+
+def status_line(agent: Agent) -> str:
+    waiting = len(agent.pending())
+    approvals = f"  |  {waiting} approval{'s' if waiting != 1 else ''} waiting" if waiting else ""
+    return f" {agent.conversation}  |  model: {agent.provider_name}{approvals}  |  /help"
+
+
+# running a turn
 
 
 def run_turn(agent: Agent, work: Callable[[threading.Event], None]) -> None:
@@ -86,17 +142,69 @@ def run_turn(agent: Agent, work: Callable[[threading.Event], None]) -> None:
         agent.stopped(f"(this turn failed: {exc})")
 
 
-def show_history(agent: Agent) -> None:
-    for message in agent.history:
-        if message["role"] == "user":
-            print(f"  you: {message['text']}")
-        elif message["role"] == "assistant":
-            if message.get("text"):
-                print(f"  agent: {message['text']}")
-            for call in message.get("tool_calls") or []:
-                print(f"  agent calls {call['name']}({json.dumps(call['args'])})")
+def lock_conversation(name: str) -> TextIO | None:
+    """Hold an exclusive lock for this conversation; the OS drops it if we die."""
+    if fcntl is None:
+        return None
+    LOCK_DIR.mkdir(exist_ok=True)
+    handle = open(LOCK_DIR / f"{name}.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise SystemExit(f'Conversation "{name}" is already open in another terminal.') from None
+    return handle
+
+
+# main loop
+
+
+def handle(agent: Agent, line: str) -> bool:
+    """Act on one line of input. Returns False to quit."""
+    command, _, rest = line.partition(" ")
+    command = command.lower()
+    rest = rest.strip()
+    if not command.startswith("/"):
+        if agent.pending():
+            print("  A post is waiting for approval: type /approve or /decline <reason> first.")
         else:
-            print(f"  result of {message['name']}: {json.dumps(message['result'])[:120]}")
+            run_turn(agent, lambda cancel: agent.send(line, cancel))
+        return True
+    if command == "/quit":
+        return False
+    if command in ("/help", "/"):
+        show_help()
+    elif command == "/history":
+        show_history(agent)
+    elif command == "/pending":
+        pending = agent.pending()
+        if pending:
+            show_approval(pending[0]["details"])
+            if len(pending) > 1:
+                print(f"  ({len(pending) - 1} more waiting after this one)")
+        else:
+            print("  Nothing is waiting for approval.")
+    elif command == "/model":
+        if not rest:
+            print(f"  Model: {agent.provider_name}. Choose from: {', '.join(PROVIDERS)}")
+        else:
+            try:
+                agent.switch(rest)
+                print(f"  Switched to {rest} ({agent.model}).")
+            except ProviderError as exc:
+                print(f"  Can't switch: {exc}")
+    elif command in ("/approve", "/decline"):
+        if not agent.pending():
+            print("  Nothing is waiting for approval.")
+        elif command == "/approve":
+            run_turn(agent, agent.approve)
+        else:
+            run_turn(agent, lambda cancel: agent.decline(rest, cancel))
+    else:
+        close = [c for c in COMMANDS if c.startswith(command)] or difflib.get_close_matches(command, COMMANDS, n=2)
+        hint = f" Did you mean {' or '.join(close)}?" if close else ""
+        print(f"  Unknown command {command}.{hint} Type /help for the list.")
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -105,6 +213,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--conversation", default="default", help="name of the conversation to start or resume")
     parser.add_argument("--model", choices=list(PROVIDERS), help="provider to use (default: the saved one)")
     args = parser.parse_args(argv)
+    if not _CONVERSATION_NAME.fullmatch(args.conversation):
+        parser.error("conversation names use letters, digits, '.', '_' or '-' (up to 64 characters)")
+    lock = lock_conversation(args.conversation)  # noqa: F841 - held until exit
 
     store = Store()
     is_new, saved = store.open_conversation(args.conversation, args.model or DEFAULT_PROVIDER)
@@ -119,51 +230,28 @@ def main(argv: list[str] | None = None) -> int:
     state = "new" if is_new else f"resumed, {len(agent.history)} messages"
     print(
         f'Conversation "{args.conversation}" ({state}). Model: {agent.provider_name}.'
-        f" Commands: /model {'|'.join(PROVIDERS)}, /approve, /decline <reason>, /history, /quit."
-        "\nPress Ctrl-C while the agent is working to stop it."
+        " Type / for commands (suggestions appear as you type; right arrow accepts).\nPress Ctrl-C while the agent is working to stop it."
     )
     if agent.pending():
         show_approval(agent.pending()[0]["details"])
 
+    read = make_reader(
+        HISTORY_FILE,
+        {command: text for command, (_, text) in COMMANDS.items()},
+        PROVIDERS,
+        status=lambda: status_line(agent),
+    )
     while True:
         try:
-            line = input("you> ").strip()
+            line = read("you> ").strip()
         except EOFError:
             print()
             return 0
         except KeyboardInterrupt:
-            print("\n  (type /quit to leave)")
+            print("  (type /quit to leave)")
             continue
-        if not line:
-            continue
-        command, _, rest = line.partition(" ")
-        rest = rest.strip()
-        if command == "/quit":
+        if line and not handle(agent, line):
             return 0
-        if command == "/history":
-            show_history(agent)
-        elif command == "/model":
-            if not rest:
-                print(f"  Model: {agent.provider_name}. Choose from: {', '.join(PROVIDERS)}")
-                continue
-            try:
-                agent.switch(rest)
-                print(f"  Switched to {rest} ({agent.model}).")
-            except ProviderError as exc:
-                print(f"  Can't switch: {exc}")
-        elif command in ("/approve", "/decline"):
-            if not agent.pending():
-                print("  Nothing is waiting for approval.")
-            elif command == "/approve":
-                run_turn(agent, agent.approve)
-            else:
-                run_turn(agent, lambda cancel: agent.decline(rest, cancel))
-        elif command.startswith("/"):
-            print("  Commands: /model <name>, /approve, /decline <reason>, /history, /quit")
-        elif agent.pending():
-            print("  A post is waiting for approval: type /approve or /decline <reason> first.")
-        else:
-            run_turn(agent, lambda cancel: agent.send(line, cancel))
 
 
 if __name__ == "__main__":

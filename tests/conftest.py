@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import ledger  # noqa: E402
 from core import Agent  # noqa: E402
+from providers import ProviderError  # noqa: E402
 from store import Store  # noqa: E402
 
 
@@ -54,7 +55,12 @@ def make_agent(store):
         fakes = {name: FakeProvider(name, script) for name, script in zip(("a", "b"), scripts)}
         store.open_conversation(conversation, "a")
         log = events if events is not None else []
-        agent = Agent(store, conversation, "a", lambda kind, payload: log.append((kind, payload)), fakes.__getitem__)
+        def factory(name: str) -> FakeProvider:
+            if name not in fakes:
+                raise ProviderError(f"unknown provider {name!r}")
+            return fakes[name]
+
+        agent = Agent(store, conversation, "a", lambda kind, payload: log.append((kind, payload)), factory)
         return agent, fakes
 
     return make

@@ -144,6 +144,16 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def claim_post(self, call_id: str) -> bool:
+        """Move a waiting post to `posting`. False if it was no longer waiting."""
+        with closing(self._connect()) as conn, conn:
+            cursor = conn.execute(
+                "UPDATE posts SET status = 'posting', updated_at = ?"
+                " WHERE call_id = ? AND status = 'pending_approval'",
+                (_now(), call_id),
+            )
+            return cursor.rowcount == 1
+
     def set_post_status(self, call_id: str, status: str) -> None:
         assert status in POST_STATUSES
         with closing(self._connect()) as conn, conn:

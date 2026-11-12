@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from typing import Sequence
 
 import ollama
 
 from providers.base import ProviderError, ToolSpec, new_call_id, with_retries
+
+_THINK = re.compile(r"^.*?</think>|<think>.*?</think>", re.DOTALL)
 
 
 class OllamaProvider:
@@ -20,21 +23,28 @@ class OllamaProvider:
     def __init__(self, api_key: str | None, model: str):
         self.model = model
         self._client = ollama.Client(host=os.environ.get("OLLAMA_HOST"))
+        # Reasoning models put their thinking in a separate field when asked to think;
+        # with think=False some (qwen3) leak it into the reply instead.
+        self._think: bool | None = True
 
     def complete(
         self, history: list[dict], system: str, tools: Sequence[ToolSpec], cancel: threading.Event
     ) -> dict:
-        response = with_retries(
-            lambda: self._client.chat(
-                model=self.model,
-                messages=to_ollama(history, system),
-                tools=[_tool(t) for t in tools],
-                think=False,
-            ),
-            _retry_after,
-            cancel,
-        )
-        return from_ollama(response.message)
+        def chat():
+            try:
+                return self._client.chat(
+                    model=self.model,
+                    messages=to_ollama(history, system),
+                    tools=[_tool(t) for t in tools],
+                    think=self._think,
+                )
+            except ollama.ResponseError as exc:
+                if self._think and "think" in str(exc.error).lower():
+                    self._think = None
+                    return chat()
+                raise
+
+        return from_ollama(with_retries(chat, _retry_after, cancel).message)
 
 
 def _tool(tool: ToolSpec) -> dict:
@@ -69,7 +79,9 @@ def from_ollama(message) -> dict:
         {"id": new_call_id(), "name": c.function.name, "args": dict(c.function.arguments or {})}
         for c in message.tool_calls or []
     ]
-    return {"role": "assistant", "text": message.content or "", "tool_calls": calls}
+    # Some local models (qwen3) still inline their reasoning even with think=False.
+    text = _THINK.sub("", message.content or "").strip()
+    return {"role": "assistant", "text": text, "tool_calls": calls}
 
 
 def _retry_after(exc: Exception) -> float | None:

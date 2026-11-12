@@ -17,20 +17,29 @@ uv run agent.py --conversation demo        # add --model groq to start on Groq
 uv run pytest                              # offline tests, with a fake provider
 ```
 
-Commands: `/model gemini|groq`, `/approve`, `/decline <reason>`, `/history`, `/quit`.
-Press Ctrl-C while the agent is working to stop it.
+Commands: `/approve`, `/decline <reason>`, `/pending`, `/model <name>`, `/history`, `/help`,
+`/quit`. Press Ctrl-C while the agent is working to stop it.
+
+**Input help** (via `prompt_toolkit`):
+- Typing `/` opens a menu of commands with what each one does. After `/model`, the menu
+  lists providers. Invoice ids are suggested with their vendor and total.
+- Grey ghost text suggests the rest of the line from your history. Press → to accept it.
+- History is kept across runs in `.agent_history`.
+- A bottom bar shows the conversation, the model and how many approvals are waiting.
+- Commands are case-insensitive, and typos get a "did you mean".
 
 **Providers:** Gemini `gemini-2.5-flash` (SDK `google-genai`) and Groq `openai/gpt-oss-120b`
 (SDK `groq`). You can override them with `GEMINI_MODEL` and `GROQ_MODEL`. A third
 connector, `ollama` (local `qwen3:4b`, no key), is there for offline testing, and it shows
-how a provider plugs in. To make the
-stop test easy, `READ_DELAY=3` adds a sleep to `read_invoice`.
+how a provider plugs in. To make the stop test easy, `READ_DELAY=3` adds a sleep to
+`read_invoice`.
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `agent.py` | CLI only: the prompt, commands, and Ctrl-C handling |
+| `agent.py` | CLI only: commands, Ctrl-C handling, and a one-terminal-per-conversation lock |
+| `cli_input.py` | Input suggestions, ghost text and history. It falls back to `input()` when piped |
 | `core.py` | `Agent`: the loop, approvals, stop, crash repair. It does no I/O; it reports through `on_event` |
 | `tools.py` | The `TOOLS` registry and the posting checks (`check_postable`) |
 | `providers/` | `base.py` holds the interface and retry. Each provider is one connector file, and `__init__.py` holds the registry |
@@ -125,12 +134,15 @@ Each turn runs on a worker thread. Ctrl-C sets that turn's cancel event:
 
 - Live runs are slow on free tiers. 429 errors are retried a few times with a wait, then
   shown as an error.
-- Two agent processes on the same conversation at once aren't locked against each other.
-  The ledger duplicate check still protects posting, but there is a small race window
-  between the check and `ledger.post`.
-- There is no streaming, no history trimming for long conversations, and only one
-  approval at a time is shown (others wait in a queue).
+- A conversation can only be open in one terminal at a time. This uses an `flock` lock,
+  which the OS releases if the process dies; Windows has no lock. `/approve` claims the
+  post atomically (`pending_approval` to `posting`), so two processes can't both post it.
+- Two different conversations asking for the same invoice in the same instant could both
+  pass the "already waiting" check. The ledger duplicate check, run again at approval,
+  narrows that window but doesn't close it. Closing it fully would need a unique index on
+  the open post for each vendor and invoice number.
+- There is no streaming and no history trimming for long conversations. Only one
+  approval is shown at a time; the others wait in a queue (see `/pending`).
 - Duplicates are matched only on vendor plus invoice number, as specified. Fuzzy
   duplicates (same amount and date under a new number) aren't caught.
-- With more time: a per-conversation lock file, tests that run against the real SDKs with
-  recorded responses, and a `/pending` command.
+- With more time: tests against the real SDKs with recorded responses.
