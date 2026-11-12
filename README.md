@@ -6,20 +6,24 @@ brief is in [ASSIGNMENT.md](ASSIGNMENT.md).
 
 ## Run it
 
+Uses [uv](https://docs.astral.sh/uv/). Python 3.12 is pinned in `.python-version`, and
+dependencies are locked in `uv.lock`.
+
 ```bash
-uv venv --python 3.12 .venv && source .venv/bin/activate   # or python3 -m venv .venv
-pip install google-genai groq python-dotenv pytest   # same as pyproject.toml
-cp .env.example .env            # fill in GEMINI_API_KEY and GROQ_API_KEY
-python ledger.py reset
-python agent.py --conversation demo        # add --model groq to start on Groq
-pytest                                     # 13 offline tests, with a fake provider
+uv sync                          # creates .venv with the locked dependencies
+cp .env.example .env             # fill in GEMINI_API_KEY and GROQ_API_KEY
+uv run ledger.py reset
+uv run agent.py --conversation demo        # add --model groq to start on Groq
+uv run pytest                              # offline tests, with a fake provider
 ```
 
 Commands: `/model gemini|groq`, `/approve`, `/decline <reason>`, `/history`, `/quit`.
 Press Ctrl-C while the agent is working to stop it.
 
 **Providers:** Gemini `gemini-2.5-flash` (SDK `google-genai`) and Groq `openai/gpt-oss-120b`
-(SDK `groq`). You can override them with `GEMINI_MODEL` and `GROQ_MODEL`. To make the
+(SDK `groq`). You can override them with `GEMINI_MODEL` and `GROQ_MODEL`. A third
+connector, `ollama` (local `qwen3:4b`, no key), is there for offline testing, and it shows
+how a provider plugs in. To make the
 stop test easy, `READ_DELAY=3` adds a sleep to `read_invoice`.
 
 ## Layout
