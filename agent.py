@@ -15,6 +15,7 @@ import json
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Callable, TextIO
 
@@ -34,6 +35,7 @@ HERE = Path(__file__).parent
 HISTORY_FILE = HERE / ".agent_history"
 LOCK_DIR = HERE / ".locks"
 DEFAULT_PROVIDER = next(iter(PROVIDERS))
+STILL_WORKING_EVERY_S = 15
 _CONVERSATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
 # command -> (argument hint, help text)
@@ -108,6 +110,10 @@ def run_turn(agent: Agent, work: Callable[[threading.Event], None]) -> None:
     cancel = threading.Event()
     failure: list[BaseException] = []
 
+    # Wait on an Event, not Thread.join: a Ctrl-C that interrupts join() makes CPython
+    # mark the still-running thread as finished (bpo-45274 handling).
+    done = threading.Event()
+
     def target() -> None:
         try:
             work(cancel)
@@ -115,22 +121,30 @@ def run_turn(agent: Agent, work: Callable[[threading.Event], None]) -> None:
             pass
         except Exception as exc:  # shown to the clerk; the history is repaired below
             failure.append(exc)
+        finally:
+            done.set()
 
-    worker = threading.Thread(target=target, daemon=True)
-    worker.start()
+    threading.Thread(target=target, daemon=True).start()
+    started = time.monotonic()
+    next_hint = started + STILL_WORKING_EVERY_S
     try:
-        while worker.is_alive():
-            worker.join(0.2)
+        while not done.wait(0.2):
+            if time.monotonic() >= next_hint:
+                print(f"  (still working on {agent.provider_name}: {time.monotonic() - started:.0f}s; Ctrl-C to stop)")
+                next_hint += STILL_WORKING_EVERY_S
     except KeyboardInterrupt:
         cancel.set()
         print("\n  Stopping...")
-        while worker.is_alive():
+        # An approved post is never cut off midway; anything else gets about a second.
+        deadline = time.monotonic() + 1.0
+        while not done.is_set():
             try:
-                # An approved post is never cut off midway; anything else gets a second.
-                worker.join(None if agent.posting.is_set() else 1.0)
+                if not agent.posting.is_set() and time.monotonic() >= deadline:
+                    break
+                done.wait(0.1)
+            except KeyboardInterrupt:
                 if not agent.posting.is_set():
                     break
-            except KeyboardInterrupt:
                 print("  Finishing the post that was already under way...")
         agent.stopped()
         print("  Stopped. Nothing further will run for that request.")

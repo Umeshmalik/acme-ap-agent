@@ -28,8 +28,9 @@ Commands: `/approve`, `/decline <reason>`, `/pending`, `/model <name>`, `/histor
 - A bottom bar shows the conversation, the model and how many approvals are waiting.
 - Commands are case-insensitive, and typos get a "did you mean".
 
-**Providers:** Gemini `gemini-2.5-flash` (SDK `google-genai`) and Groq `openai/gpt-oss-120b`
-(SDK `groq`). You can override them with `GEMINI_MODEL` and `GROQ_MODEL`. A third
+**Providers:** Gemini `gemini-3.8-flash` (SDK `google-genai`; `2.5-flash` is closed to new
+keys) and Groq `openai/gpt-oss-120b` (SDK `groq`). Gemini's free tier allows only about 20
+requests a day for this model, and each agent turn makes several requests. You can override them with `GEMINI_MODEL` and `GROQ_MODEL`. A third
 connector, `ollama` (local `qwen3:4b`, no key), is there for offline testing, and it shows
 how a provider plugs in. To make the stop test easy, `READ_DELAY=3` adds a sleep to
 `read_invoice`.
@@ -115,6 +116,9 @@ Each turn runs on a worker thread. Ctrl-C sets that turn's cancel event:
 - Rate-limit backoffs wake up as soon as the event is set.
 - An approved `ledger.post` is the one thing that is not cut off. Stop waits for it (about
   2 seconds) and records the result.
+- The CLI waits on a `done` event, not `Thread.join()`. A Ctrl-C that interrupts `join()`
+  makes CPython mark the still-running thread as finished, and that once let a post finish
+  unattended.
 
 ## Crashes at awkward moments
 
@@ -132,8 +136,12 @@ Each turn runs on a worker thread. Ctrl-C sets that turn's cancel event:
 
 ## Not handled / next steps
 
-- Live runs are slow on free tiers. 429 errors are retried a few times with a wait, then
-  shown as an error.
+- Slow or failing providers:
+  - Each request has a 45-second timeout.
+  - Timeouts, 5xx errors and short 429s are retried with doubling waits (up to 5 tries).
+    Each retry is shown on screen, and a "still working" line appears every 15 seconds.
+  - A quota that resets in more than a minute, such as Gemini's daily free tier, fails
+    straight away with a plain message saying when it resets.
 - A conversation can only be open in one terminal at a time. This uses an `flock` lock,
   which the OS releases if the process dies; Windows has no lock. `/approve` claims the
   post atomically (`pending_approval` to `posting`), so two processes can't both post it.

@@ -129,7 +129,13 @@ class Agent:
                 raise Cancelled()
             with self._lock:
                 history = list(self.history)
-            reply = provider.complete(history, SYSTEM_PROMPT, list(self.tools.values()), cancel)
+            reply = provider.complete(
+                history,
+                SYSTEM_PROMPT,
+                list(self.tools.values()),
+                cancel,
+                notify=lambda text: None if cancel.is_set() else self.on_event("notice", text),
+            )
             self._save(reply, cancel)
             if reply["text"]:
                 self.on_event("text", reply["text"])

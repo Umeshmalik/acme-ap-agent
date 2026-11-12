@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from agent import COMMANDS, handle
+import os
+import signal
+import threading
+
+import ledger
+from agent import COMMANDS, handle, run_turn
 from cli_input import suggestions
 from conftest import call, say
 
@@ -24,6 +29,22 @@ def test_suggestions():
     assert texts("") == []
     meta = dict(suggestions("post invoice-0", CMDS, PROVIDERS))
     assert "Orbit Facility Services" in meta["invoice-04"]
+
+
+def test_ctrl_c_during_an_approved_post_waits_for_it(make_agent, monkeypatch):
+    monkeypatch.setattr(ledger.time, "sleep", _real_sleep)  # the real 2s post, so Ctrl-C lands mid-post
+    agent, _ = make_agent([call("post_invoice", invoice_id="invoice-06"), say("Posted.")])
+    agent.send("post invoice-06", threading.Event())
+    for delay in (0.5, 0.9):  # Ctrl-C, then an impatient second one
+        threading.Timer(delay, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
+    run_turn(agent, agent.approve)
+    rows = ledger.entries(invoice_number="SGP/26-27/0431")
+    assert len(rows) == 1
+    assert agent.store.posts("posted", "t")[0]["entry_id"] == rows[0]["entry_id"]
+
+
+def _real_sleep(seconds: float) -> None:
+    threading.Event().wait(seconds)
 
 
 def test_absurd_lines_never_crash(make_agent, capsys):

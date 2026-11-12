@@ -44,9 +44,17 @@ class Provider(Protocol):
         system: str,
         tools: Sequence[ToolSpec],
         cancel: threading.Event,
+        notify: Callable[[str], None],
     ) -> dict:
-        """Return the model's next turn as a neutral assistant message."""
+        """Return the model's next turn as a neutral assistant message.
+
+        `notify` tells the person about delays (retries, rate limits) as they happen.
+        """
         ...
+
+
+# Per-request limit for hosted APIs, so a stalled request becomes a visible retry.
+REQUEST_TIMEOUT_S = 45
 
 
 def new_call_id() -> str:
@@ -60,11 +68,14 @@ def with_retries(
     call: Callable[[], T],
     retry_after: Callable[[Exception], float | None],
     cancel: threading.Event,
-    attempts: int = 4,
+    notify: Callable[[str], None],
+    label: str,
+    attempts: int = 5,
 ) -> T:
-    """Run `call`, retrying when `retry_after(exc)` returns a wait in seconds.
+    """Run `call`, retrying when `retry_after(exc)` returns a base wait in seconds.
 
-    Waits are cut short by `cancel`, so a stop during a rate-limit backoff is immediate.
+    The wait doubles on each attempt (capped at 30s), and request timeouts are always
+    retried. Waits are cut short by `cancel`, so a stop during a backoff is immediate.
     """
     for attempt in range(1, attempts + 1):
         if cancel.is_set():
@@ -72,9 +83,29 @@ def with_retries(
         try:
             return call()
         except Exception as exc:
-            wait = retry_after(exc)
-            if wait is None or attempt == attempts:
+            if cancel.is_set():
+                raise Cancelled() from None
+            timed_out = _is_timeout(exc)
+            base = 1.0 if timed_out else retry_after(exc)
+            reason = "timed out" if timed_out else _describe(exc)
+            if base is None:
                 raise
-            if cancel.wait(min(wait, 30)):
+            wait = min(base * 2 ** (attempt - 1), 30)
+            if attempt == attempts:
+                raise ProviderError(f"{label} {reason}; gave up after {attempts} tries") from exc
+            notify(f"{label} {reason}; retrying in {wait:g}s (attempt {attempt + 1} of {attempts})")
+            if cancel.wait(wait):
                 raise Cancelled() from None
     raise AssertionError("unreachable")
+
+
+def _is_timeout(exc: Exception) -> bool:
+    # The SDKs bundle different HTTP clients (httpx, google-genai's httpx2), so match by name.
+    return isinstance(exc, TimeoutError) or any(
+        cls.__name__ in ("TimeoutException", "APITimeoutError") for cls in type(exc).__mro__
+    )
+
+
+def _describe(exc: Exception) -> str:
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    return f"error {code}" if code else type(exc).__name__

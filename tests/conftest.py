@@ -35,7 +35,7 @@ class FakeProvider:
         self.script = list(script)
         self.seen: list[list[dict]] = []
 
-    def complete(self, history, system, tools, cancel):
+    def complete(self, history, system, tools, cancel, notify):
         self.seen.append(history)
         step = self.script.pop(0)
         return step(history, cancel) if callable(step) else step

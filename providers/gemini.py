@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import base64
+import re
 import threading
-from typing import Sequence
+from typing import Callable, Sequence
 
 from google import genai
 from google.genai import errors, types
 
-from providers.base import ProviderError, ToolSpec, new_call_id, with_retries
+from providers.base import REQUEST_TIMEOUT_S, ProviderError, ToolSpec, new_call_id, with_retries
 
 # Gemini 3 rejects replayed function calls that lack a thought signature. Calls made by
 # another provider never had one, and Google documents this value for that case.
@@ -19,14 +20,21 @@ _SKIP_SIGNATURE = b"skip_thought_signature_validator"
 class GeminiProvider:
     name = "gemini"
     env_key = "GEMINI_API_KEY"
-    default_model = "gemini-2.5-flash"
+    default_model = "gemini-3.8-flash"
 
     def __init__(self, api_key: str, model: str):
         self.model = model
-        self._client = genai.Client(api_key=api_key)
+        self._client = genai.Client(
+            api_key=api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_S * 1000)
+        )
 
     def complete(
-        self, history: list[dict], system: str, tools: Sequence[ToolSpec], cancel: threading.Event
+        self,
+        history: list[dict],
+        system: str,
+        tools: Sequence[ToolSpec],
+        cancel: threading.Event,
+        notify: Callable[[str], None],
     ) -> dict:
         config = types.GenerateContentConfig(
             system_instruction=system,
@@ -39,6 +47,8 @@ class GeminiProvider:
             ),
             _retry_after,
             cancel,
+            notify,
+            self.name,
         )
         return from_gemini(response)
 
@@ -110,8 +120,35 @@ def from_gemini(response: types.GenerateContentResponse) -> dict:
 def _retry_after(exc: Exception) -> float | None:
     if isinstance(exc, errors.APIError):
         if exc.code == 429:
-            return 10.0
+            delay = quota_delay(exc.message or "")
+            if delay is not None and delay > 60:
+                raise ProviderError(
+                    f"Gemini quota used up ({_quota_kind(exc.message or '')}); it resets in about"
+                    f" {_human(delay)}. Switch provider with /model."
+                ) from exc
+            return delay or 10.0
         if exc.code in (500, 502, 503, 504):
             return 3.0
         raise ProviderError(f"Gemini error {exc.code}: {exc.message}") from exc
     return None
+
+
+_RETRY_IN = re.compile(r"retry in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?", re.IGNORECASE)
+
+
+def quota_delay(message: str) -> float | None:
+    """Seconds until Gemini says to retry ("Please retry in 17h29m6.7s"), if it says."""
+    match = _RETRY_IN.search(message)
+    if not match or not any(match.groups()):
+        return None
+    hours, minutes, seconds = (float(g) if g else 0.0 for g in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _quota_kind(message: str) -> str:
+    return "daily free-tier limit" if "per day" in message.lower() else "rate limit"
+
+
+def _human(seconds: float) -> str:
+    hours, rest = divmod(int(seconds), 3600)
+    return f"{hours}h {rest // 60}m" if hours else f"{rest // 60}m"

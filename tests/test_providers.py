@@ -5,7 +5,7 @@ import json
 
 from google.genai import types
 
-from providers.gemini import from_gemini, to_gemini
+from providers.gemini import from_gemini, quota_delay, to_gemini
 from providers.groq import to_groq
 
 HISTORY = [
@@ -17,6 +17,12 @@ HISTORY = [
     {"role": "tool", "call_id": "call_g2", "name": "lookup_vendor", "result": {"found": True}},
     {"role": "assistant", "text": "One line, INR 21948.00.", "tool_calls": []},
 ]
+
+
+def test_quota_delay_parsing():
+    assert quota_delay("Generate content requests per day limit exceeded. Please retry in 17h29m6.78s.") == 17 * 3600 + 29 * 60 + 6.78
+    assert quota_delay("Please retry in 42.5s.") == 42.5
+    assert quota_delay("Resource exhausted") is None
 
 
 def test_to_groq():

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import threading
-from typing import Sequence
+from typing import Callable, Sequence
 
 import groq
 
-from providers.base import ProviderError, ToolSpec, new_call_id, with_retries
+from providers.base import REQUEST_TIMEOUT_S, ProviderError, ToolSpec, new_call_id, with_retries
 
 
 class GroqProvider:
@@ -18,10 +18,15 @@ class GroqProvider:
 
     def __init__(self, api_key: str, model: str):
         self.model = model
-        self._client = groq.Groq(api_key=api_key, max_retries=0)
+        self._client = groq.Groq(api_key=api_key, max_retries=0, timeout=REQUEST_TIMEOUT_S)
 
     def complete(
-        self, history: list[dict], system: str, tools: Sequence[ToolSpec], cancel: threading.Event
+        self,
+        history: list[dict],
+        system: str,
+        tools: Sequence[ToolSpec],
+        cancel: threading.Event,
+        notify: Callable[[str], None],
     ) -> dict:
         response = with_retries(
             lambda: self._client.chat.completions.create(
@@ -32,6 +37,8 @@ class GroqProvider:
             ),
             _retry_after,
             cancel,
+            notify,
+            self.name,
         )
         return from_groq(response.choices[0].message)
 

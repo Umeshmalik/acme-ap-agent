@@ -6,7 +6,7 @@ import json
 import os
 import re
 import threading
-from typing import Sequence
+from typing import Callable, Sequence
 
 import ollama
 
@@ -28,7 +28,12 @@ class OllamaProvider:
         self._think: bool | None = True
 
     def complete(
-        self, history: list[dict], system: str, tools: Sequence[ToolSpec], cancel: threading.Event
+        self,
+        history: list[dict],
+        system: str,
+        tools: Sequence[ToolSpec],
+        cancel: threading.Event,
+        notify: Callable[[str], None],
     ) -> dict:
         def chat():
             try:
@@ -44,7 +49,7 @@ class OllamaProvider:
                     return chat()
                 raise
 
-        return from_ollama(with_retries(chat, _retry_after, cancel).message)
+        return from_ollama(with_retries(chat, _retry_after, cancel, notify, self.name).message)
 
 
 def _tool(tool: ToolSpec) -> dict:
