@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS posts (
     reason TEXT,
     updated_at TEXT NOT NULL
 );
+-- At most one open post per invoice across all conversations, enforced by SQLite, so two
+-- conversations asking at the same instant can't both get an approval (and both post).
+CREATE UNIQUE INDEX IF NOT EXISTS one_open_post_per_invoice ON posts (vendor_id, invoice_number)
+    WHERE status IN ('pending_approval', 'posting');
 """
 
 # pending_approval -> posting -> posted
@@ -107,21 +111,26 @@ class Store:
 
     # posts
 
-    def add_pending_post(self, name: str, call_id: str, invoice_id: str, details: dict) -> None:
-        with closing(self._connect()) as conn, conn:
-            conn.execute(
-                "INSERT INTO posts (call_id, conversation, invoice_id, vendor_id, invoice_number,"
-                " details, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending_approval', ?)",
-                (
-                    call_id,
-                    name,
-                    invoice_id,
-                    details["vendor_id"],
-                    details["invoice_number"],
-                    json.dumps(details),
-                    _now(),
-                ),
-            )
+    def add_pending_post(self, name: str, call_id: str, invoice_id: str, details: dict) -> bool:
+        """Save a post waiting for approval. False if this invoice already has an open post."""
+        try:
+            with closing(self._connect()) as conn, conn:
+                conn.execute(
+                    "INSERT INTO posts (call_id, conversation, invoice_id, vendor_id, invoice_number,"
+                    " details, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending_approval', ?)",
+                    (
+                        call_id,
+                        name,
+                        invoice_id,
+                        details["vendor_id"],
+                        details["invoice_number"],
+                        json.dumps(details),
+                        _now(),
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
 
     def posts(self, status: str, name: str | None = None) -> list[dict]:
         """Posts with a status, oldest first; across all conversations unless `name` is given."""

@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -28,8 +30,9 @@ from store import Store
 
 try:
     import fcntl
-except ImportError:  # Windows: no conversation lock
+except ImportError:  # Windows
     fcntl = None
+    import msvcrt
 
 HERE = Path(__file__).parent
 HISTORY_FILE = HERE / ".agent_history"
@@ -64,6 +67,11 @@ def show_event(kind: str, payload: object) -> None:
         show_approval(payload)
     elif kind == "refused":
         print(f"  Not posting: {payload}")
+    elif kind == "posted":
+        print(
+            f"  Posted to the ledger as {payload['entry_id']}: {payload['vendor_id']}"
+            f" {payload['invoice_number']}, {payload['currency']} {payload['amount']}"
+        )
     elif kind == "notice":
         print(f"  {payload}")
 
@@ -137,6 +145,7 @@ def run_turn(agent: Agent, work: Callable[[threading.Event], None]) -> None:
         print("\n  Stopping...")
         # An approved post is never cut off midway; anything else gets about a second.
         deadline = time.monotonic() + 1.0
+        warned = False
         while not done.is_set():
             try:
                 if not agent.posting.is_set() and time.monotonic() >= deadline:
@@ -145,26 +154,40 @@ def run_turn(agent: Agent, work: Callable[[threading.Event], None]) -> None:
             except KeyboardInterrupt:
                 if not agent.posting.is_set():
                     break
-                print("  Finishing the post that was already under way...")
-        agent.stopped()
+                if warned:
+                    # Same as a crash mid-post: the next start checks the ledger for it.
+                    print("  Quitting now. On the next start the ledger is checked for this post.", flush=True)
+                    os._exit(130)
+                warned = True
+                print("  Finishing the post that was already under way... (Ctrl-C again to quit now)")
+        tidy(agent, "(stopped by the clerk)")
         print("  Stopped. Nothing further will run for that request.")
         return
     if failure:
         exc = failure[0]
         label = "Provider error" if isinstance(exc, ProviderError) else f"Error ({type(exc).__name__})"
         print(f"  {label}: {exc}")
-        agent.stopped(f"(this turn failed: {exc})")
+        tidy(agent, f"(this turn failed: {exc})")
+
+
+def tidy(agent: Agent, note: str) -> None:
+    """Close the abandoned turn's tool calls. If even that can't be saved, the next start does it."""
+    try:
+        agent.stopped(note)
+    except Exception as exc:
+        print(f"  Couldn't save the end of that turn ({type(exc).__name__}: {exc}); it is repaired on the next start.")
 
 
 def lock_conversation(name: str) -> TextIO | None:
     """Hold an exclusive lock for this conversation; the OS drops it if we die."""
-    if fcntl is None:
-        return None
     LOCK_DIR.mkdir(exist_ok=True)
     handle = open(LOCK_DIR / f"{name}.lock", "w")
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+        if fcntl:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:  # BlockingIOError (POSIX) or PermissionError (Windows)
         handle.close()
         raise SystemExit(f'Conversation "{name}" is already open in another terminal.') from None
     return handle
@@ -264,9 +287,18 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             print("  (type /quit to leave)")
             continue
-        if line and not handle(agent, line):
-            return 0
+        try:
+            if line and not handle(agent, line):
+                return 0
+        except sqlite3.Error as exc:  # e.g. disk full or a locked database: say so and carry on
+            print(f"  Storage error: {exc}")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:  # Ctrl-C outside a turn, e.g. during startup: nothing to tidy
+        print("\n  Interrupted.")
+        sys.exit(130)
+    except sqlite3.DatabaseError as exc:
+        sys.exit(f"Can't use the database ({exc}). If it is corrupt, move it aside and start again.")

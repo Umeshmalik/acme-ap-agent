@@ -20,6 +20,9 @@ from store import Store
 from tools import TOOLS, Tool, run_tool
 
 MAX_STEPS = 15
+# ponytail: older turns are simply not sent once a conversation is this long; summarise
+# them instead if clerks need the agent to remember that far back.
+MAX_HISTORY = 200
 
 SYSTEM_PROMPT = """You are the accounts payable assistant for Acme Foods. You help the clerk
 check vendor invoices against the vendor list and post them to the ledger.
@@ -38,6 +41,9 @@ EventHandler = Callable[[str, object], None]
 
 class AgentBusy(Exception):
     """A post is waiting for approval; it must be approved or declined first."""
+
+    def __init__(self) -> None:
+        super().__init__("a post is waiting for approval: type /approve or /decline <reason> first")
 
 
 class Agent:
@@ -84,6 +90,7 @@ class Agent:
         return self.store.posts("pending_approval", self.conversation)
 
     def send(self, text: str, cancel: threading.Event) -> None:
+        self._settle_interrupted()
         if self.pending():
             raise AgentBusy()
         self._save({"role": "user", "text": text}, cancel)
@@ -94,9 +101,11 @@ class Agent:
         call, tool = self._call_and_tool(post["call_id"])
         check = _prepare(tool, call["args"])
         if not check["ok"]:
+            self._emit(cancel, "refused", check["reason"])
             self._resolve(post, "refused", {"posted": False, "reason": check["reason"]}, cancel)
         elif check["details"] != post["details"]:
             reason = "the invoice changed after the approval was shown; nothing was posted"
+            self._emit(cancel, "refused", reason)
             self._resolve(post, "refused", {"posted": False, "reason": reason}, cancel)
         else:
             self._run_approved(post, tool, cancel)
@@ -128,7 +137,7 @@ class Agent:
             if cancel.is_set():
                 raise Cancelled()
             with self._lock:
-                history = list(self.history)
+                history = _recent(self.history)
             reply = provider.complete(
                 history,
                 SYSTEM_PROMPT,
@@ -145,7 +154,7 @@ class Agent:
                 if cancel.is_set():
                     raise Cancelled()
                 tool = self.tools.get(call["name"])
-                self.on_event("tool", call)
+                self._emit(cancel, "tool", call)
                 if tool and tool.needs_approval:
                     self._request_approval(tool, call, cancel)
                 else:
@@ -153,7 +162,7 @@ class Agent:
                     self._save(_tool_message(call, result), cancel)
             pending = self.pending()
             if pending:
-                self.on_event("approval", pending[0]["details"])
+                self._emit(cancel, "approval", pending[0]["details"])
                 return
         note = f"(stopped after {MAX_STEPS} steps without a final answer)"
         self._save({"role": "assistant", "text": note, "tool_calls": []}, cancel)
@@ -165,18 +174,31 @@ class Agent:
         check = _prepare(tool, call["args"])
         if check["ok"]:
             details = check["details"]
-            waiting = self.store.open_posts_for(details["vendor_id"], details["invoice_number"])
-            if waiting:
-                where = waiting[0]["conversation"]
-                check = {"ok": False, "reason": f"already waiting for approval (conversation {where!r})"}
-        if not check["ok"]:
-            self.on_event("refused", check["reason"])
-            self._save(_tool_message(call, {"posted": False, "refused": True, "reason": check["reason"]}), cancel)
-            return
-        with self._lock:
-            if cancel.is_set():
-                raise Cancelled()
-            self.store.add_pending_post(self.conversation, call["id"], call["args"].get("invoice_id", ""), check["details"])
+            reason = self._already_open(details)
+            if reason is None:
+                with self._lock:
+                    if cancel.is_set():
+                        raise Cancelled()
+                    invoice_id = call["args"].get("invoice_id", "")
+                    if self.store.add_pending_post(self.conversation, call["id"], invoice_id, details):
+                        return
+                # Another conversation opened it between our check and our insert.
+                reason = self._already_open(details) or "already waiting for approval in another conversation"
+            check = {"ok": False, "reason": reason}
+        self._emit(cancel, "refused", check["reason"])
+        self._save(_tool_message(call, {"posted": False, "refused": True, "reason": check["reason"]}), cancel)
+
+    def _already_open(self, details: dict) -> str | None:
+        waiting = self.store.open_posts_for(details["vendor_id"], details["invoice_number"])
+        if not waiting:
+            return None
+        where = waiting[0]["conversation"]
+        if waiting[0]["status"] == "posting":
+            return (
+                f"already being posted in conversation {where!r}; if that program was closed"
+                " mid-post, reopen that conversation to finish it"
+            )
+        return f"already waiting for approval (conversation {where!r})"
 
     def _run_approved(self, post: dict, tool: Tool, cancel: threading.Event) -> None:
         with self._lock:
@@ -187,14 +209,18 @@ class Agent:
             self.posting.set()
         try:
             # Once started, the action is never abandoned: its outcome is always recorded.
+            # If anything below raises, the post stays at `posting` and _settle_interrupted
+            # asks the ledger what happened before the next turn (or on restart).
             try:
                 result = tool.run(post["details"], reference=self._reference(post))
             except Exception as exc:
                 result = tool.recover(post["details"], self._reference(post)) if tool.recover else None
                 if result is None:
+                    self.on_event("refused", f"the ledger call failed, nothing was posted: {exc}")
                     self._resolve(post, "refused", {"posted": False, "error": str(exc)}, cancel, force=True)
                     return
             self._resolve(post, "posted", result, cancel, entry_id=result.get("entry_id"), force=True)
+            self.on_event("posted", result)  # shown even after a stop: the clerk must know
         finally:
             self.posting.clear()
 
@@ -209,6 +235,11 @@ class Agent:
         raise LookupError(f"tool call {call_id} not in history")
 
     # saving
+
+    def _emit(self, cancel: threading.Event, kind: str, payload: object) -> None:
+        """Report an event unless the turn was stopped (an abandoned turn stays quiet)."""
+        if not cancel.is_set():
+            self.on_event(kind, payload)
 
     def _save(self, message: dict, cancel: threading.Event) -> None:
         with self._lock:
@@ -244,6 +275,15 @@ class Agent:
 
     def recover(self) -> None:
         """Call on startup: settle posts cut off mid-way, then close dangling tool calls."""
+        self._settle_interrupted()
+        with self._lock:
+            self._repair("(the program stopped before this turn finished)")
+
+    def _settle_interrupted(self) -> None:
+        """Settle posts left at `posting` (a crash, or a failure after the ledger call):
+        the ledger, searched by our reference, says whether the post happened."""
+        if self.posting.is_set():  # a post is running right now; it records its own outcome
+            return
         for post in self.store.posts("posting", self.conversation):
             call, tool = self._call_and_tool(post["call_id"])
             result = tool.recover(post["details"], self._reference(post)) if tool.recover else None
@@ -253,8 +293,6 @@ class Agent:
             else:
                 self.store.set_post_status(post["call_id"], "pending_approval")
                 self.on_event("notice", "An interrupted post never reached the ledger; it needs approval again.")
-        with self._lock:
-            self._repair("(the program stopped before this turn finished)")
 
     def _repair(self, note: str) -> None:
         if not self.history:
@@ -275,6 +313,17 @@ class Agent:
         if fixes:
             self.store.append_many(self.conversation, fixes)
             self.history.extend(fixes)
+
+
+def _recent(history: list[dict]) -> list[dict]:
+    """The latest messages, at most MAX_HISTORY, starting at a user message so every tool
+    call keeps its result (a turn is never cut in half)."""
+    if len(history) <= MAX_HISTORY:
+        return list(history)
+    starts = [i for i, m in enumerate(history) if m["role"] == "user"]
+    fits = [i for i in starts if len(history) - i <= MAX_HISTORY]
+    start = fits[0] if fits else (starts[-1] if starts else 0)
+    return history[start:]
 
 
 def _prepare(tool: Tool, args: dict) -> dict:

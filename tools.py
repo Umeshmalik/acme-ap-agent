@@ -132,6 +132,15 @@ def check_postable(invoice_id: str) -> dict:
         return {"ok": False, "reason": f"invoice total is not a number: {invoice['total']!r}"}
     if not total.is_finite() or total <= 0:
         return {"ok": False, "reason": f"invoice total must be positive: {invoice['total']}"}
+    lines = sum((Decimal(line["amount"]) for line in invoice.get("lines", [])), Decimal(0))
+    taxes = sum((Decimal(tax["amount"]) for tax in invoice.get("taxes", [])), Decimal(0))
+    subtotal = Decimal(invoice.get("subtotal", lines))
+    if lines != subtotal or subtotal + taxes != total:
+        return {
+            "ok": False,
+            "reason": f"invoice doesn't add up: lines {lines}, subtotal {subtotal}, taxes {taxes},"
+            f" total {total}",
+        }
     existing = ledger.entries(vendor_id=vendor["vendor_id"], invoice_number=invoice["invoice_number"])
     if existing:
         return {

@@ -40,11 +40,13 @@ calls get Google's documented placeholder). Switching only changes which connect
 ## Approval and the posting checks
 
 The model passes only an `invoice_id`. `check_postable` (`tools.py`) runs in code before any approval:
-file exists, vendor is in `vendors.json` and `active`, total is a positive decimal, no ledger entry
-with the same vendor + invoice number, not already waiting in any conversation. Blocked vendors and
+file exists, vendor is in `vendors.json` and `active`, total is a positive decimal that equals lines +
+taxes, no ledger entry with the same vendor + invoice number, not already open in any conversation
+(a partial unique index in SQLite enforces this, so two conversations racing can't both get an approval). Blocked vendors and
 duplicates are refused back to the model with no approval shown. Otherwise the box shows exactly what
 would be posted. `/approve` re-runs the checks, then calls `ledger.post`; `/decline` returns the reason
-to the model. Chat is refused while an approval is waiting.
+to the model. The program itself prints the entry id once posted, so the clerk knows even if the
+model call after it fails. Chat is refused while an approval is waiting.
 
 ## Stop
 
@@ -52,7 +54,8 @@ Each turn runs on a worker thread; Ctrl-C sets its cancel event. The prompt retu
 abandoned thread can't save or print, because every save checks the event under a lock. Tool calls
 left without a result get `{"error": "stopped ..."}` plus a short assistant note, so history stays
 valid for both providers. Backoffs wake on the event. The one thing not cut off is an approved
-`ledger.post`: stop waits for it (~2 s) and records the result. The CLI waits on a `done` event, not
+`ledger.post`: stop waits for it (~2 s) and records the result; a further Ctrl-C quits at once and
+the post is settled from the ledger on the next start, exactly like a crash. The CLI waits on a `done` event, not
 `Thread.join()`: a Ctrl-C inside `join()` makes CPython mark the thread finished, which once let a post
 complete unattended.
 
@@ -63,16 +66,19 @@ complete unattended.
   `reference="<conversation>/<call_id>"`; on restart the ledger is searched for it. Found → `posted`
   with the real entry id. Not found → back to `pending_approval`. Never retried blindly.
 - **Killed mid-turn:** dangling tool calls are closed as after a stop.
+- **Ledger call fails mid-session, outcome unknown:** the row stays `posting` and is settled from the
+  ledger (same reference lookup) before the next turn, so the conversation doesn't break.
+- **Storage errors** (disk full, locked or corrupt DB) are reported instead of a traceback.
 
 ## Not handled / next steps
 
-- Providers: 45 s timeout; timeouts, 5xx and short 429s retried with backoff (5 tries, shown on
-  screen). A quota resetting in over a minute (Gemini daily tier) fails fast with the reset time.
-- One terminal per conversation via `flock` (released if the process dies). **Windows has no lock.**
+- Providers: 45 s timeout; timeouts, dropped connections, 5xx and short 429s retried with backoff
+  (5 tries, shown on screen). A quota resetting in over a minute (Gemini daily tier) fails fast.
+- One terminal per conversation via `flock` / `msvcrt.locking` (released if the process dies).
   `/approve` claims the post atomically, so two processes can't both post it.
-- **Two conversations requesting the same invoice at the same instant** can both pass the "already
-  waiting" check. The ledger re-check at approval narrows but doesn't close this; a unique index on
-  open posts per vendor + invoice number would.
-- No streaming, no history trimming. One approval shown at a time; others queue (`/pending`).
+- Only the last ~200 messages are sent to the model (cut at a turn boundary); older turns are
+  forgotten, not summarised. No streaming. One approval at a time; others queue (`/pending`).
+- A post left `posting` by a crashed conversation blocks that invoice elsewhere until that
+  conversation is reopened (the refusal says which one).
 - Duplicates match only vendor + invoice number, as specified; fuzzy duplicates aren't caught.
 - With more time: tests against the real SDKs with recorded responses.

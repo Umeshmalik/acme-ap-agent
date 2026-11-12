@@ -74,8 +74,8 @@ def with_retries(
 ) -> T:
     """Run `call`, retrying when `retry_after(exc)` returns a base wait in seconds.
 
-    The wait doubles on each attempt (capped at 30s), and request timeouts are always
-    retried. Waits are cut short by `cancel`, so a stop during a backoff is immediate.
+    The wait doubles on each attempt (capped at 30s). Timeouts and dropped connections
+    are always retried, for every provider. Waits are cut short by `cancel`, so a stop during a backoff is immediate.
     """
     for attempt in range(1, attempts + 1):
         if cancel.is_set():
@@ -85,9 +85,12 @@ def with_retries(
         except Exception as exc:
             if cancel.is_set():
                 raise Cancelled() from None
-            timed_out = _is_timeout(exc)
-            base = 1.0 if timed_out else retry_after(exc)
-            reason = "timed out" if timed_out else _describe(exc)
+            if _is_timeout(exc):
+                base, reason = 1.0, "timed out"
+            elif _is_connection_error(exc):
+                base, reason = 3.0, "connection failed (network down?)"
+            else:
+                base, reason = retry_after(exc), _describe(exc)
             if base is None:
                 raise
             wait = min(base * 2 ** (attempt - 1), 30)
@@ -103,6 +106,14 @@ def _is_timeout(exc: Exception) -> bool:
     # The SDKs bundle different HTTP clients (httpx, google-genai's httpx2), so match by name.
     return isinstance(exc, TimeoutError) or any(
         cls.__name__ in ("TimeoutException", "APITimeoutError") for cls in type(exc).__mro__
+    )
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    # httpx's TransportError covers connect/read failures and dropped connections;
+    # APIConnectionError is the groq/openai SDK wrapper around them.
+    return isinstance(exc, ConnectionError) or any(
+        cls.__name__ in ("TransportError", "APIConnectionError") for cls in type(exc).__mro__
     )
 
 
